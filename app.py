@@ -60,44 +60,80 @@ st.markdown(
 st.sidebar.title("⚡ Quantitative Controls")
 st.sidebar.markdown("---")
 
-input_method = st.sidebar.radio("Select Input Method:", ["Text Input", "Upload Excel / CSV"])
+input_method = st.sidebar.radio(
+    "Select Input Method:", 
+    ["Interactive Table", "Text Input", "Upload Excel / CSV"]
+)
 
 raw_records = []
 
-if input_method == "Text Input":
-    default_text = """COST: 9610: 2021-01-15
-TSLA: 9600: 2022-03-10
-SOXL: 9530: 2023-01-05
-JPM: 6420: 2020-05-20
-AON: 6400: 2020-08-14
-MSFT: 6410: 2019-11-12
-RKLB: 5140: 2022-01-20
-WMT: 5120: 2021-04-10
-NVDA: 4810: 2022-10-15
-AMD: 4790: 2021-09-01
-NOW: 4790: 2022-02-18
-AVGO: 4790: 2021-06-30
-HLN: 4490: 2022-07-22
-SERV: 3220: 2023-11-01
-GOOGL: 3210: 2021-08-01
-ABNB: 3200: 2021-12-10
-AXON: 3200: 2022-04-05
-NBIS: 3190: 2023-03-15
-ENVX: 2080: 2022-09-01"""
+if input_method == "Interactive Table":
+    st.sidebar.markdown("**Edit Holdings Table:**")
+    
+    # Pre-cast dates to datetime to prevent StreamlitAPIException type errors
+    default_df = pd.DataFrame([
+        {"Ticker": "COST", "Amount": 9610.0, "PurchaseDate": "2021-01-15"},
+        {"Ticker": "TSLA", "Amount": 9600.0, "PurchaseDate": "2022-03-10"},
+        {"Ticker": "SOXL", "Amount": 9530.0, "PurchaseDate": "2023-01-05"},
+        {"Ticker": "JPM",  "Amount": 6420.0, "PurchaseDate": "2020-05-20"},
+        {"Ticker": "AON",  "Amount": 6400.0, "PurchaseDate": "2020-08-14"},
+        {"Ticker": "MSFT", "Amount": 6410.0, "PurchaseDate": "2019-11-12"},
+        {"Ticker": "NVDA", "Amount": 4810.0, "PurchaseDate": "2022-10-15"},
+        {"Ticker": "AAPL", "Amount": 5000.0, "PurchaseDate": "2020-01-01"},
+    ])
+    default_df["PurchaseDate"] = pd.to_datetime(default_df["PurchaseDate"])
+
+    edited_df = st.sidebar.data_editor(
+        default_df,
+        num_rows="dynamic",
+        column_config={
+            "Ticker": st.column_config.TextColumn("Ticker", help="Stock or ETF symbol (e.g., NVDA)", required=True),
+            "Amount": st.column_config.NumberColumn("Dollar Amount ($)", min_value=0.0, format="$%.2f", required=True),
+            "PurchaseDate": st.column_config.DateColumn("Date Bought", help="Purchase date for historical tracking")
+        },
+        use_container_width=True,
+        key="holdings_editor"
+    )
+
+    for _, row in edited_df.dropna(subset=["Ticker", "Amount"]).iterrows():
+        t_str = str(row["Ticker"]).strip().upper()
+        if t_str and float(row["Amount"]) > 0:
+            p_date = pd.to_datetime(row["PurchaseDate"]).strftime("%Y-%m-%d") if pd.notna(row["PurchaseDate"]) else "2020-01-01"
+            raw_records.append({
+                "Ticker": t_str,
+                "Amount": float(row["Amount"]),
+                "PurchaseDate": p_date
+            })
+
+elif input_method == "Text Input":
+    default_text = """COST 9610 2021-01-15
+TSLA 9600 2022-03-10
+SOXL 9530 2023-01-05
+JPM 6420 2020-05-20
+AON 6400 2020-08-14
+MSFT 6410 2019-11-12
+NVDA 4810 2022-10-15
+AAPL 5000 2020-01-01"""
     
     user_input = st.sidebar.text_area(
-        "Enter Holdings (Ticker: $Amount: YYYY-MM-DD)",
+        "Enter Holdings (Flexible Format)",
         value=default_text.strip(),
         height=200,
-        help="Format: TICKER: AMOUNT: PURCHASE_DATE"
+        help="Paste from Excel or type lines as: TICKER AMOUNT [DATE]\nSupported separators: spaces, commas, tabs, or colons."
     )
     
     for line in user_input.strip().split("\n"):
-        parts = [p.strip() for p in line.split(":") if p.strip()]
+        line = line.strip()
+        if not line:
+            continue
+        clean_line = line.replace(",", " ").replace(":", " ").replace("\t", " ")
+        parts = [p.strip() for p in clean_line.split() if p.strip()]
+        
         if len(parts) >= 2:
             ticker = parts[0].upper()
+            raw_amt = parts[1].replace("$", "").replace(",", "")
             try:
-                amt = float(parts[1].replace("$", "").replace(",", ""))
+                amt = float(raw_amt)
                 p_date = parts[2] if len(parts) >= 3 else "2020-01-01"
                 raw_records.append({"Ticker": ticker, "Amount": amt, "PurchaseDate": p_date})
             except ValueError:
@@ -128,11 +164,13 @@ else:
         except Exception as e:
             st.sidebar.error(f"Error parsing uploaded file: {e}")
 
+# ============================================================
+# DATA AGGREGATION & INITIALIZATION (PREVENTS NameError)
+# ============================================================
 if not raw_records:
     st.sidebar.error("Please provide valid holdings.")
     st.stop()
 
-# Aggregate duplicate ticker entries (sums amount, uses earliest purchase date)
 df_raw = pd.DataFrame(raw_records)
 df_raw["PurchaseDate"] = pd.to_datetime(df_raw["PurchaseDate"], errors="coerce").fillna(pd.to_datetime("2020-01-01"))
 
@@ -194,7 +232,6 @@ if prices.empty:
     st.error("Unable to retrieve market data. Please check ticker inputs.")
     st.stop()
 
-# Validate returned tickers against requested list
 valid_asset_tickers = [t for t in holdings_df["Ticker"] if t in prices.columns and not prices[t].dropna().empty]
 missing_tickers = sorted(set(holdings_df["Ticker"]) - set(valid_asset_tickers))
 
@@ -205,10 +242,8 @@ if not valid_asset_tickers:
     st.error("No valid asset tickers available for analysis.")
     st.stop()
 
-# Filter holdings dataframe to valid tickers only
 holdings_df = holdings_df[holdings_df["Ticker"].isin(valid_asset_tickers)].copy()
 
-# Recalculate portfolio value on validated holdings (Prevents silent weight cash drift)
 analyzed_portfolio_value = holdings_df["Amount"].sum()
 weights_series = holdings_df.set_index("Ticker")["Amount"] / analyzed_portfolio_value
 n_assets = len(valid_asset_tickers)
@@ -219,7 +254,6 @@ n_assets = len(valid_asset_tickers)
 asset_returns = prices[valid_asset_tickers].pct_change()
 benchmark_returns = prices[benchmark_ticker].pct_change()
 
-# Construct dynamic active weights matrix based on individual asset acquisition dates
 active_weights = pd.DataFrame(0.0, index=asset_returns.index, columns=asset_returns.columns)
 
 for _, row in holdings_df.iterrows():
@@ -227,11 +261,9 @@ for _, row in holdings_df.iterrows():
     p_date = row["PurchaseDate"]
     active_weights.loc[active_weights.index >= p_date, t_symbol] = weights_series[t_symbol]
 
-# Dynamically normalize weights across active assets for each date
 row_weight_sums = active_weights.sum(axis=1)
 normalized_weights = active_weights.div(row_weight_sums.replace(0, np.nan), axis=0)
 
-# Calculate dynamic time-varying daily portfolio returns
 portfolio_returns = (asset_returns * normalized_weights).sum(axis=1, min_count=1).dropna()
 
 combined = pd.DataFrame({"Portfolio": portfolio_returns, "Benchmark": benchmark_returns}).dropna()
@@ -249,14 +281,10 @@ mean_rets = risk_returns.mean() * trading_days
 # ============================================================
 # QUANTITATIVE METRICS ENGINE
 # ============================================================
-n_days = len(port_ret)
-
-# Calendar elapsed time for CAGR calculation
 elapsed_years = (port_ret.index[-1] - port_ret.index[0]).days / 365.25
 total_return = (1 + port_ret).prod() - 1
 cagr = ((1 + total_return) ** (1 / elapsed_years) - 1) if elapsed_years > 0 else np.nan
 
-# Period-by-period daily excess returns for Sharpe & Sortino
 daily_rf = (1 + risk_free_rate) ** (1 / trading_days) - 1
 excess_returns = port_ret - daily_rf
 
@@ -267,7 +295,6 @@ downside_excess = excess_returns[excess_returns < 0]
 downside_deviation = np.sqrt(np.mean(downside_excess ** 2)) if len(downside_excess) > 0 else 1e-6
 sortino_ratio = (excess_returns.mean() / downside_deviation) * np.sqrt(trading_days) if downside_deviation > 0 else np.nan
 
-# Value at Risk & Expected Shortfall
 var_historical_pct = np.percentile(port_ret, (1 - confidence_level) * 100)
 var_parametric_pct = stats.norm.ppf(1 - confidence_level, port_ret.mean(), port_ret.std(ddof=1))
 
@@ -277,7 +304,6 @@ dollar_var_parametric = analyzed_portfolio_value * var_parametric_pct
 cvar_historical_pct = port_ret[port_ret <= var_historical_pct].mean()
 dollar_cvar_historical = analyzed_portfolio_value * cvar_historical_pct
 
-# CAPM Regression
 X = sm.add_constant(bench_ret)
 model = sm.OLS(port_ret, X).fit()
 alpha_annual = model.params["const"] * trading_days
@@ -537,16 +563,15 @@ with tab5:
     st.plotly_chart(fig_mc, use_container_width=True)
 
 # ------------------------------------------------------------
-# TAB 6: CRISIS STRESS TESTING (HISTORICAL & BENCHMARK SIMULATED)
+# TAB 6: CRISIS STRESS TESTING
 # ------------------------------------------------------------
 with tab6:
     st.subheader("📉 Historical Crisis Scenario Stress Testing")
     st.markdown(
         "Evaluate how your current portfolio weights would hold up during major market panics, "
-        "including recent crises (using asset-level data) and historic crashes like **Black Tuesday**."
+        "including recent crises (using exact asset price data) and historic crashes like **Black Tuesday**."
     )
 
-    # Define recent crises with YFinance date ranges
     recent_crises = {
         "2020 COVID-19 Crash": ("2020-02-19", "2020-03-23"),
         "2022 Tech / Inflation Selloff": ("2022-01-03", "2022-10-12"),
@@ -556,7 +581,6 @@ with tab6:
 
     stress_results = []
 
-    # 1. Calculate live/recent crisis impacts using exact asset price movements
     for crisis_name, (c_start, c_end) in recent_crises.items():
         buffer_start = (pd.to_datetime(c_start) - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
         sub_prices = fetch_market_data(valid_asset_tickers, buffer_start, c_end)
@@ -588,32 +612,22 @@ with tab6:
                     "Estimated $ Impact": dollar_impact
                 })
 
-    # 2. Add Historical Benchmark Shock Simulations (e.g., Black Tuesday 1929)
-    # Historical Market Benchmarks:
-    # - Black Tuesday / Great Depression (1929-1932): Dow Jones fell ~86% peak-to-trough
-    # - 1987 Black Monday: S&P 500 fell ~22.6% in a single day
     benchmark_crises = [
         {
-            "Scenario": "1929 Black Tuesday / Great Depression Peak Shock",
+            "Scenario": "1929 Black Tuesday / Great Depression",
             "Period": "1929 - 1932",
-            "Market Shock": -0.861,  # -86.1% S&P/Dow historic drop
-            "Notes": "Simulated using portfolio Beta sensitivity relative to historic market collapse"
+            "Market Shock": -0.861
         },
         {
             "Scenario": "1987 Black Monday Single-Day Crash",
             "Period": "Oct 19, 1987",
-            "Market Shock": -0.205,  # -20.5% S&P 500 single-day drop
-            "Notes": "Simulated single-day systemic liquidity shock"
+            "Market Shock": -0.205
         }
     ]
 
     for b_crisis in benchmark_crises:
-        # Scale the market shock by the portfolio's estimated beta
-        # (capping beta impact between 0.5 and 2.5 to avoid extreme distortion)
         adj_beta = max(0.5, min(beta, 2.5)) if 'beta' in locals() and not np.isnan(beta) else 1.0
-        simulated_return = b_crisis["Market Shock"] * adj_beta
-        # Ensure return doesn't exceed -100%
-        simulated_return = max(-0.9999, simulated_return)
+        simulated_return = max(-0.9999, b_crisis["Market Shock"] * adj_beta)
         dollar_impact = analyzed_portfolio_value * simulated_return
 
         stress_results.append({
@@ -624,18 +638,15 @@ with tab6:
             "Estimated $ Impact": dollar_impact
         })
 
-    # Display results table
     if stress_results:
         df_stress = pd.DataFrame(stress_results)
         
-        # Display formatted table
         disp_stress = df_stress.copy()
         disp_stress["Portfolio Return"] = disp_stress["Portfolio Return"].map("{:.2%}".format)
         disp_stress["Estimated $ Impact"] = disp_stress["Estimated $ Impact"].map("${:,.2f}".format)
         
         st.dataframe(disp_stress, use_container_width=True)
 
-        # Plotly comparison bar chart
         fig_stress = px.bar(
             df_stress,
             x="Crisis Scenario",
@@ -648,17 +659,15 @@ with tab6:
         )
         fig_stress.update_layout(yaxis=dict(tickformat=".0%"))
         st.plotly_chart(fig_stress, use_container_width=True)
-
     else:
-        st.warning("Unable to process crisis stress testing data.")
-        
+        st.warning("Could not compute stress test results.")
+
 # ------------------------------------------------------------
 # TAB 7: REBALANCING PLAN & DETAILED EXECUTIVE AUDIT
 # ------------------------------------------------------------
 with tab7:
     st.subheader(f"⚡ Portfolio Optimization ({opt_target})")
     
-    # Check optimization feasibility
     min_feasible_cap = 1.0 / n_assets
     if max_asset_weight < min_feasible_cap:
         st.error(
@@ -683,7 +692,7 @@ with tab7:
         elif opt_target == "Minimum Volatility":
             def objective(w):
                 return calc_port_stats(w)[1]
-        else:  # Risk Parity (Equal Risk Contribution)
+        else:  # Risk Parity
             def objective(w):
                 v = np.sqrt(np.dot(w.T, np.dot(cov_matrix_ann, w)))
                 m_risk = np.dot(cov_matrix_ann, w) / v
@@ -725,7 +734,6 @@ with tab7:
             st.markdown(f"### Actionable Trade Order Plan (Capped at {max_asset_weight:.0%} Max Weight)")
             st.dataframe(display_df, use_container_width=True)
 
-            # Download CSV Export
             csv_buffer = io.StringIO()
             rebal_df.to_csv(csv_buffer, index=False)
             st.download_button(
